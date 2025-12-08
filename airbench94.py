@@ -42,10 +42,13 @@ hyp = {
         'batch_size': 1024,
         'lr': 11.5,                 # learning rate per 1024 examples
         'momentum': 0.85,
-        'weight_decay': 0.0153,     # weight decay per 1024 examples (decoupled from learning rate)
-        'bias_scaler': 64.0,        # scales up learning rate (but not weight decay) for BatchNorm biases
+        # weight decay per 1024 examples (decoupled from learning rate)
+        'weight_decay': 0.0153,
+        # scales up learning rate (but not weight decay) for BatchNorm biases
+        'bias_scaler': 64.0,
         'label_smoothing': 0.2,
-        'whiten_bias_epochs': 3,    # how many epochs to train the whitening layer bias before freezing
+        # how many epochs to train the whitening layer bias before freezing
+        'whiten_bias_epochs': 3,
     },
     'aug': {
         'flip': True,
@@ -59,7 +62,8 @@ hyp = {
         },
         'batchnorm_momentum': 0.6,
         'scaling_factor': 1/9,
-        'tta_level': 2,         # the level of test-time augmentation: 0=none, 1=mirror, 2=mirror+translate
+        # the level of test-time augmentation: 0=none, 1=mirror, 2=mirror+translate
+        'tta_level': 2,
     },
 }
 
@@ -70,22 +74,29 @@ hyp = {
 CIFAR_MEAN = torch.tensor((0.4914, 0.4822, 0.4465))
 CIFAR_STD = torch.tensor((0.2470, 0.2435, 0.2616))
 
+
 def batch_flip_lr(inputs):
-    flip_mask = (torch.rand(len(inputs), device=inputs.device) < 0.5).view(-1, 1, 1, 1)
+    flip_mask = (torch.rand(len(inputs), device=inputs.device)
+                 < 0.5).view(-1, 1, 1, 1)
     return torch.where(flip_mask, inputs.flip(-1), inputs)
+
 
 def batch_crop(images, crop_size):
     r = (images.size(-1) - crop_size)//2
-    shifts = torch.randint(-r, r+1, size=(len(images), 2), device=images.device)
-    images_out = torch.empty((len(images), 3, crop_size, crop_size), device=images.device, dtype=images.dtype)
+    shifts = torch.randint(-r, r+1, size=(len(images), 2),
+                           device=images.device)
+    images_out = torch.empty(
+        (len(images), 3, crop_size, crop_size), device=images.device, dtype=images.dtype)
     # The two cropping methods in this if-else produce equivalent results, but the second is faster for r > 2.
     if r <= 2:
         for sy in range(-r, r+1):
             for sx in range(-r, r+1):
                 mask = (shifts[:, 0] == sy) & (shifts[:, 1] == sx)
-                images_out[mask] = images[mask, :, r+sy:r+sy+crop_size, r+sx:r+sx+crop_size]
+                images_out[mask] = images[mask, :, r +
+                                          sy:r+sy+crop_size, r+sx:r+sx+crop_size]
     else:
-        images_tmp = torch.empty((len(images), 3, crop_size, crop_size+2*r), device=images.device, dtype=images.dtype)
+        images_tmp = torch.empty(
+            (len(images), 3, crop_size, crop_size+2*r), device=images.device, dtype=images.dtype)
         for s in range(-r, r+1):
             mask = (shifts[:, 0] == s)
             images_tmp[mask] = images[mask, :, r+s:r+s+crop_size, :]
@@ -94,23 +105,27 @@ def batch_crop(images, crop_size):
             images_out[mask] = images_tmp[mask, :, :, r+s:r+s+crop_size]
     return images_out
 
+
 class CifarLoader:
 
     def __init__(self, path, train=True, batch_size=500, aug=None, drop_last=None, shuffle=None, gpu=0):
         data_path = os.path.join(path, 'train.pt' if train else 'test.pt')
         if not os.path.exists(data_path):
-            dset = torchvision.datasets.CIFAR10(path, download=True, train=train)
+            dset = torchvision.datasets.CIFAR10(
+                path, download=True, train=train)
             images = torch.tensor(dset.data)
             labels = torch.tensor(dset.targets)
-            torch.save({'images': images, 'labels': labels, 'classes': dset.classes}, data_path)
+            torch.save({'images': images, 'labels': labels,
+                       'classes': dset.classes}, data_path)
 
         data = torch.load(data_path, map_location=torch.device(gpu))
         self.images, self.labels, self.classes = data['images'], data['labels'], data['classes']
         # It's faster to load+process uint8 data than to load preprocessed fp16 data
-        self.images = (self.images.half() / 255).permute(0, 3, 1, 2).to(memory_format=torch.channels_last)
+        self.images = (self.images.half() / 255).permute(0, 3,
+                                                         1, 2).to(memory_format=torch.channels_last)
 
         self.normalize = T.Normalize(CIFAR_MEAN, CIFAR_STD)
-        self.proc_images = {} # Saved results of image processing to be done on the first epoch
+        self.proc_images = {}  # Saved results of image processing to be done on the first epoch
         self.epoch = 0
 
         self.aug = aug or {}
@@ -149,7 +164,8 @@ class CifarLoader:
 
         self.epoch += 1
 
-        indices = (torch.randperm if self.shuffle else torch.arange)(len(images), device=images.device)
+        indices = (torch.randperm if self.shuffle else torch.arange)(
+            len(images), device=images.device)
         for i in range(len(self)):
             idxs = indices[i*self.batch_size:(i+1)*self.batch_size]
             yield (images[idxs], self.labels[idxs])
@@ -158,16 +174,20 @@ class CifarLoader:
 #            Network Components             #
 #############################################
 
+
 class Flatten(nn.Module):
     def forward(self, x):
         return x.view(x.size(0), -1)
+
 
 class Mul(nn.Module):
     def __init__(self, scale):
         super().__init__()
         self.scale = scale
+
     def forward(self, x):
         return x * self.scale
+
 
 class BatchNorm(nn.BatchNorm2d):
     def __init__(self, num_features, momentum, eps=1e-12,
@@ -177,9 +197,11 @@ class BatchNorm(nn.BatchNorm2d):
         self.bias.requires_grad = bias
         # Note that PyTorch already initializes the weights to one and bias to zero
 
+
 class Conv(nn.Conv2d):
     def __init__(self, in_channels, out_channels, kernel_size=3, padding='same', bias=False):
-        super().__init__(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=bias)
+        super().__init__(in_channels, out_channels,
+                         kernel_size=kernel_size, padding=padding, bias=bias)
 
     def reset_parameters(self):
         super().reset_parameters()
@@ -187,6 +209,7 @@ class Conv(nn.Conv2d):
             self.bias.data.zero_()
         w = self.weight.data
         torch.nn.init.dirac_(w[:w.size(1)])
+
 
 class ConvGroup(nn.Module):
     def __init__(self, channels_in, channels_out, batchnorm_momentum):
@@ -211,6 +234,7 @@ class ConvGroup(nn.Module):
 #############################################
 #            Network Definition             #
 #############################################
+
 
 def make_net():
     widths = hyp['net']['widths']
@@ -240,26 +264,32 @@ def make_net():
 #       Whitening Conv Initialization       #
 #############################################
 
+
 def get_patches(x, patch_shape):
     c, (h, w) = x.shape[1], patch_shape
-    return x.unfold(2,h,1).unfold(3,w,1).transpose(1,3).reshape(-1,c,h,w).float()
+    return x.unfold(2, h, 1).unfold(3, w, 1).transpose(1, 3).reshape(-1, c, h, w).float()
+
 
 def get_whitening_parameters(patches):
-    n,c,h,w = patches.shape
+    n, c, h, w = patches.shape
     patches_flat = patches.view(n, -1)
     est_patch_covariance = (patches_flat.T @ patches_flat) / n
-    eigenvalues, eigenvectors = torch.linalg.eigh(est_patch_covariance, UPLO='U')
-    return eigenvalues.flip(0).view(-1, 1, 1, 1), eigenvectors.T.reshape(c*h*w,c,h,w).flip(0)
+    eigenvalues, eigenvectors = torch.linalg.eigh(
+        est_patch_covariance, UPLO='U')
+    return eigenvalues.flip(0).view(-1, 1, 1, 1), eigenvectors.T.reshape(c*h*w, c, h, w).flip(0)
+
 
 def init_whitening_conv(layer, train_set, eps=5e-4):
     patches = get_patches(train_set, patch_shape=layer.weight.data.shape[2:])
     eigenvalues, eigenvectors = get_whitening_parameters(patches)
     eigenvectors_scaled = eigenvectors / torch.sqrt(eigenvalues + eps)
-    layer.weight.data[:] = torch.cat((eigenvectors_scaled, -eigenvectors_scaled))
+    layer.weight.data[:] = torch.cat(
+        (eigenvectors_scaled, -eigenvectors_scaled))
 
 ############################################
 #                Lookahead                 #
 ############################################
+
 
 class LookaheadState:
     def __init__(self, net):
@@ -275,6 +305,7 @@ class LookaheadState:
 #                 Logging                  #
 ############################################
 
+
 def print_columns(columns_list, is_head=False, is_final_entry=False):
     print_string = ''
     for col in columns_list:
@@ -286,7 +317,11 @@ def print_columns(columns_list, is_head=False, is_final_entry=False):
     if is_head or is_final_entry:
         print('-'*len(print_string))
 
-logging_columns_list = ['run   ', 'epoch', 'train_loss', 'train_acc', 'val_acc', 'tta_val_acc', 'total_time_seconds']
+
+logging_columns_list = ['run   ', 'epoch', 'train_loss',
+                        'train_acc', 'val_acc', 'tta_val_acc', 'total_time_seconds']
+
+
 def print_training_details(variables, is_final_entry):
     formatted = []
     for col in logging_columns_list:
@@ -304,6 +339,7 @@ def print_training_details(variables, is_final_entry):
 ############################################
 #               Evaluation                 #
 ############################################
+
 
 def infer(model, loader, tta_level=0):
 
@@ -340,6 +376,7 @@ def infer(model, loader, tta_level=0):
     with torch.no_grad():
         return torch.cat([infer_fn(inputs, model) for inputs in test_images.split(2000)])
 
+
 def evaluate(model, loader, tta_level=0):
     logits = infer(model, loader, tta_level)
     return (logits.argmax(1) == loader.labels).float().mean().item()
@@ -347,6 +384,7 @@ def evaluate(model, loader, tta_level=0):
 ############################################
 #                Training                  #
 ############################################
+
 
 def main(run):
 
@@ -358,26 +396,33 @@ def main(run):
     # learning rate by this ratio in order to ensure steps are the same scale as gradients, regardless
     # of the choice of momentum.
     kilostep_scale = 1024 * (1 + 1 / (1 - momentum))
-    lr = hyp['opt']['lr'] / kilostep_scale # un-decoupled learning rate for PyTorch SGD
+    # un-decoupled learning rate for PyTorch SGD
+    lr = hyp['opt']['lr'] / kilostep_scale
     wd = hyp['opt']['weight_decay'] * batch_size / kilostep_scale
     lr_biases = lr * hyp['opt']['bias_scaler']
 
-    loss_fn = nn.CrossEntropyLoss(label_smoothing=hyp['opt']['label_smoothing'], reduction='none')
+    loss_fn = nn.CrossEntropyLoss(
+        label_smoothing=hyp['opt']['label_smoothing'], reduction='none')
     test_loader = CifarLoader('cifar10', train=False, batch_size=2000)
-    train_loader = CifarLoader('cifar10', train=True, batch_size=batch_size, aug=hyp['aug'])
+    train_loader = CifarLoader(
+        'cifar10', train=True, batch_size=batch_size, aug=hyp['aug'])
     if run == 'warmup':
         # The only purpose of the first run is to warmup, so we can use dummy data
-        train_loader.labels = torch.randint(0, 10, size=(len(train_loader.labels),), device=train_loader.labels.device)
+        train_loader.labels = torch.randint(0, 10, size=(
+            len(train_loader.labels),), device=train_loader.labels.device)
     total_train_steps = ceil(len(train_loader) * epochs)
 
     model = make_net()
     current_steps = 0
 
-    norm_biases = [p for k, p in model.named_parameters() if 'norm' in k and p.requires_grad]
-    other_params = [p for k, p in model.named_parameters() if 'norm' not in k and p.requires_grad]
+    norm_biases = [p for k, p in model.named_parameters()
+                   if 'norm' in k and p.requires_grad]
+    other_params = [p for k, p in model.named_parameters(
+    ) if 'norm' not in k and p.requires_grad]
     param_configs = [dict(params=norm_biases, lr=lr_biases, weight_decay=wd/lr_biases),
                      dict(params=other_params, lr=lr, weight_decay=wd/lr)]
-    optimizer = torch.optim.SGD(param_configs, momentum=momentum, nesterov=True)
+    optimizer = torch.optim.SGD(
+        param_configs, momentum=momentum, nesterov=True)
 
     def get_lr(step):
         warmup_steps = int(total_train_steps * 0.23)
@@ -390,7 +435,8 @@ def main(run):
             return 1.0 * (1 - frac) + 0.07 * frac
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, get_lr)
 
-    alpha_schedule = 0.95**5 * (torch.arange(total_train_steps+1) / total_train_steps)**3
+    alpha_schedule = 0.95**5 * \
+        (torch.arange(total_train_steps+1) / total_train_steps)**3
     lookahead_state = LookaheadState(model)
 
     # For accurately timing GPU code
@@ -408,7 +454,8 @@ def main(run):
 
     for epoch in range(ceil(epochs)):
 
-        model[0].bias.requires_grad = (epoch < hyp['opt']['whiten_bias_epochs'])
+        model[0].bias.requires_grad = (
+            epoch < hyp['opt']['whiten_bias_epochs'])
 
         ####################
         #     Training     #
@@ -429,7 +476,8 @@ def main(run):
             current_steps += 1
 
             if current_steps % 5 == 0:
-                lookahead_state.update(model, decay=alpha_schedule[current_steps].item())
+                lookahead_state.update(
+                    model, decay=alpha_schedule[current_steps].item())
 
             if current_steps >= total_train_steps:
                 if lookahead_state is not None:
@@ -445,18 +493,20 @@ def main(run):
         ####################
 
         # Save the accuracy and loss from the last training batch of the epoch
-        train_acc = (outputs.detach().argmax(1) == labels).float().mean().item()
+        train_acc = (outputs.detach().argmax(1) ==
+                     labels).float().mean().item()
         train_loss = loss.item() / batch_size
         val_acc = evaluate(model, test_loader, tta_level=0)
         print_training_details(locals(), is_final_entry=False)
-        run = None # Only print the run number once
+        run = None  # Only print the run number once
 
     ####################
     #  TTA Evaluation  #
     ####################
 
     starter.record()
-    tta_val_acc = evaluate(model, test_loader, tta_level=hyp['net']['tta_level'])
+    tta_val_acc = evaluate(
+        model, test_loader, tta_level=hyp['net']['tta_level'])
     ender.record()
     torch.cuda.synchronize()
     total_time_seconds += 1e-3 * starter.elapsed_time(ender)
@@ -466,12 +516,13 @@ def main(run):
 
     return tta_val_acc
 
+
 if __name__ == "__main__":
     with open(sys.argv[0]) as f:
         code = f.read()
 
     print_columns(logging_columns_list, is_head=True)
-    #main('warmup')
+    # main('warmup')
     accs = torch.tensor([main(run) for run in range(25)])
     print('Mean: %.4f    Std: %.4f' % (accs.mean(), accs.std()))
 
@@ -481,4 +532,3 @@ if __name__ == "__main__":
     log_path = os.path.join(log_dir, 'log.pt')
     print(os.path.abspath(log_path))
     torch.save(log, os.path.join(log_dir, 'log.pt'))
-
