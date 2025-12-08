@@ -137,30 +137,125 @@ def apply_rotary_emb(x, cos, sin):
 
 class CausalSelfAttention(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, layer_idx: int):
         super().__init__()
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.head_dim = self.n_embd // self.n_head
         assert self.n_embd % self.n_head == 0
-        self.c_q = nn.Linear(self.n_embd, self.n_embd, bias=False)
-        self.c_k = nn.Linear(self.n_embd, self.n_embd, bias=False)
-        self.c_v = nn.Linear(self.n_embd, self.n_embd, bias=False)
+        
+        # --- flags from config ---
+        self.use_mdha = getattr(config, "use_mdha", False)
+        self.use_gqa  = getattr(config, "use_gqa", False)
+        self.num_gqa_layers = getattr(config, "num_gqa_layers", 0)
+
+        # is this a GQA layer (top-K layers), or full MHA layer?
+        self.is_gqa_layer = (
+            self.use_gqa and
+            self.num_gqa_layers > 0 and
+            layer_idx >= config.n_layer - self.num_gqa_layers
+        )
+
+        # K/V groups: in lower layers, num_kv_groups == n_head (baseline),
+        # in upper GQA layers, num_kv_groups < n_head (e.g., 4 groups for 16 heads).
+        self.num_kv_groups = (
+            getattr(config, "num_kv_groups", self.n_head)
+            if self.is_gqa_layer else
+            self.n_head
+        )
+
+        # Q keeps full heads always
+        self.c_q = nn.Linear(self.n_embd, self.n_head * self.head_dim, bias=False)
+        # K/V possibly reduced to num_kv_groups
+        self.c_k = nn.Linear(self.n_embd, self.num_kv_groups * self.head_dim, bias=False)
+        self.c_v = nn.Linear(self.n_embd, self.num_kv_groups * self.head_dim, bias=False)
+
         # output projection
         self.c_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
-        self.c_proj.weight.data.zero_() # zero init suggested by @Grad62304977
+        self.c_proj.weight.data.zero_()  # zero init suggested by @Grad62304977
+
         self.rotary = Rotary(self.head_dim)
 
+        # --- MDHA convs: depthwise-ish Conv1d along time ---
+        if self.use_mdha:
+            ksize = getattr(config, "mdha_kernel_size", 3)
+
+            # For Q: conv over [B, H*D, T], grouped by head
+            self.q_conv = nn.Conv1d(
+                in_channels=self.n_head * self.head_dim,
+                out_channels=self.n_head * self.head_dim,
+                kernel_size=ksize,
+                groups=self.n_head,      # per-head conv
+                padding=ksize - 1,       # we'll crop to keep causality
+            )
+
+            # For K/V: conv over [B, G*D, T], grouped by KV group
+            kv_channels = self.num_kv_groups * self.head_dim
+            self.kv_conv = nn.Conv1d(
+                in_channels=kv_channels,
+                out_channels=kv_channels,
+                kernel_size=ksize,
+                groups=self.num_kv_groups,
+                padding=ksize - 1,
+            )
+
+
     def forward(self, x):
-        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
-        q = self.c_q(x).view(B, T, self.n_head, self.head_dim)
-        k = self.c_k(x).view(B, T, self.n_head, self.head_dim)
-        v = self.c_v(x).view(B, T, self.n_head, self.head_dim)
+        B, T, C = x.size()  # batch size, sequence length, embedding dim (n_embd)
+
+        # 1) Project Q/K/V with possibly different numbers of K/V groups
+        q = self.c_q(x).view(B, T, self.n_head, self.head_dim)               # [B, T, H, D]
+        k = self.c_k(x).view(B, T, self.num_kv_groups, self.head_dim)        # [B, T, G, D]
+        v = self.c_v(x).view(B, T, self.num_kv_groups, self.head_dim)        # [B, T, G, D]
+
+        # 2) Optional MDHA (Conv1d along time) on Q/K/V
+        if self.use_mdha:
+            # Q: [B, T, H, D] -> [B, H*D, T] -> conv -> back
+            q_flat = q.reshape(B, T, self.n_head * self.head_dim).transpose(1, 2)  # [B, H*D, T]
+            q_flat = self.q_conv(q_flat)[..., :T]  # crop to keep sequence length T
+            q = q_flat.transpose(1, 2).reshape(B, T, self.n_head, self.head_dim)
+
+            # K/V: [B, T, G, D] -> [B, G*D, T] -> conv -> back
+            kv_channels = self.num_kv_groups * self.head_dim
+            k_flat = k.reshape(B, T, kv_channels).transpose(1, 2)
+            v_flat = v.reshape(B, T, kv_channels).transpose(1, 2)
+            k_flat = self.kv_conv(k_flat)[..., :T]
+            v_flat = self.kv_conv(v_flat)[..., :T]
+            k = k_flat.transpose(1, 2).reshape(B, T, self.num_kv_groups, self.head_dim)
+            v = v_flat.transpose(1, 2).reshape(B, T, self.num_kv_groups, self.head_dim)
+
+        # 3) Rotary embeddings + QK norm (same as baseline, but K has G groups instead of H)
         cos, sin = self.rotary(q)
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
-        q, k = F.rms_norm(q, (q.size(-1),)), F.rms_norm(k, (k.size(-1),)) # QK norm suggested by @Grad62304977
-        y = F.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=True)
-        y = y.transpose(1, 2).contiguous().view_as(x) # re-assemble all head outputs side by side
+        q, k = F.rms_norm(q, (q.size(-1),)), F.rms_norm(k, (k.size(-1),))  # QK norm suggested by @Grad62304977
+
+        # 4) Prepare for scaled dot-product attention
+        # q_attn: [B, H, T, D]
+        q_attn = q.transpose(1, 2)
+
+        # k/v: either baseline (num_kv_groups == n_head) or GQA (num_kv_groups < n_head)
+        if self.is_gqa_layer:
+            assert self.n_head % self.num_kv_groups == 0, \
+        f"n_head ({self.n_head}) must be divisible by num_kv_groups ({self.num_kv_groups}) in GQA layers"
+
+            # GQA: repeat each KV group across its group of heads
+            group_size = self.n_head // self.num_kv_groups
+            k_group = k.transpose(1, 2)  # [B, G, T, D]
+            v_group = v.transpose(1, 2)  # [B, G, T, D]
+            k_attn = k_group.repeat_interleave(group_size, dim=1)  # [B, H, T, D]
+            v_attn = v_group.repeat_interleave(group_size, dim=1)  # [B, H, T, D]
+        else:
+            # baseline: num_kv_groups == n_head
+            k_attn = k.transpose(1, 2)  # [B, H, T, D]
+            v_attn = v.transpose(1, 2)  # [B, H, T, D]
+
+        # 5) Scaled dot-product attention (unchanged interface)
+        y = F.scaled_dot_product_attention(
+            q_attn, k_attn, v_attn,
+            is_causal=True,
+        )
+        # 6) Re-assemble heads and project out
+        y = y.transpose(1, 2).contiguous().view_as(x)  # [B, T, C]
         y = self.c_proj(y)
         return y
 
@@ -180,9 +275,10 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, layer_idx):
         super().__init__()
-        self.attn = CausalSelfAttention(config)
+        self.layer_idx = layer_idx
+        self.attn = CausalSelfAttention(config, layer_idx=layer_idx)
         self.mlp = MLP(config)
 
     def forward(self, x):
@@ -199,6 +295,14 @@ class GPTConfig:
     n_layer : int = 12
     n_head : int = 6 # head dim 128 suggested by @Grad62304977
     n_embd : int = 768
+    
+    # --- NEW: attention experiment flags ---
+    use_mdha : bool = False
+    use_gqa : bool = False
+    mdha_kernel_size : int = 3
+    num_kv_groups : int = 1
+    num_gqa_layers : int = 0
+
 
 class GPT(nn.Module):
 
@@ -208,7 +312,7 @@ class GPT(nn.Module):
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h = nn.ModuleList([Block(config, layer_idx=i) for i in range(config.n_layer)]),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
@@ -325,7 +429,7 @@ class Hyperparameters:
     batch_size : int = 8*64 # batch size, in sequences, across all devices
     device_batch_size : int = 64 # batch size, in sequences, per device
     sequence_length : int = 1024 # sequence length, in tokens
-    num_iterations : int = 100 # number of iterations to run
+    num_iterations : int = 5100 # number of iterations to run
     learning_rate : float = 0.0036
     warmup_iters : int = 0
     warmdown_iters : int = 1450 # number of iterations of linear warmup/warmdown for triangular or trapezoidal schedule
@@ -334,6 +438,15 @@ class Hyperparameters:
     val_loss_every : int = 125 # every how many steps to evaluate val loss? 0 for only at the end
     val_tokens : int = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     save_every : int = 0 # every how many steps to save the checkpoint? 0 for only at the end
+
+    # --- NEW: attention experiment flags (wired to env vars for CLI control) ---
+    # NOTE: os is already imported at the top of the file.
+    use_mdha : bool = bool(int(os.getenv("USE_MDHA", "0")))
+    use_gqa : bool = bool(int(os.getenv("USE_GQA", "0")))
+    mdha_kernel_size : int = int(os.getenv("MDHA_KERNEL_SIZE", "3"))
+    num_kv_groups : int = int(os.getenv("NUM_KV_GROUPS", "1"))
+    num_gqa_layers : int = int(os.getenv("NUM_GQA_LAYERS", "0"))
+
 args = Hyperparameters()
 
 # set up DDP (distributed data parallel). torchrun sets this env variable
@@ -367,10 +480,24 @@ x, y = train_loader.next_batch()
 # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency. suggested to me by @Grad62304977.
 # this originates from Karpathy's experiments.
 num_vocab = 50304
-model = GPT(GPTConfig(vocab_size=num_vocab, n_layer=12, n_head=6, n_embd=768))
+model = GPT(GPTConfig(
+    vocab_size=num_vocab,
+    n_layer=12,
+    n_head=6,
+    n_embd=768,
+    use_mdha=args.use_mdha,
+    use_gqa=args.use_gqa,
+    mdha_kernel_size=args.mdha_kernel_size,
+    num_kv_groups=args.num_kv_groups,
+    num_gqa_layers=args.num_gqa_layers,
+))
 model = model.cuda()
 if hasattr(config, "coordinate_descent_tuning"):
     config.coordinate_descent_tuning = True # suggested by @Chillee
+if master_process:
+    print(f"use_mdha={args.use_mdha}, use_gqa={args.use_gqa}, "
+          f"mdha_kernel_size={args.mdha_kernel_size}, "
+          f"num_kv_groups={args.num_kv_groups}, num_gqa_layers={args.num_gqa_layers}")
 model = torch.compile(model)
 # here we wrap model into DDP container
 model = DDP(model, device_ids=[ddp_local_rank])
