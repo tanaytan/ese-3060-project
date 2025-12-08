@@ -554,6 +554,7 @@ def main(run):
         train_loss = loss.item() / batch_size
         val_acc = evaluate(model, test_loader, tta_level=0)
         print_training_details(locals(), is_final_entry=False)
+        run = None  # Only print the run number once
 
     ####################
     #  TTA Evaluation  #
