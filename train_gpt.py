@@ -429,7 +429,7 @@ class Hyperparameters:
     batch_size : int = 8*64 # batch size, in sequences, across all devices
     device_batch_size : int = 64 # batch size, in sequences, per device
     sequence_length : int = 1024 # sequence length, in tokens
-    num_iterations : int = 5100 # number of iterations to run
+    num_iterations : int = 100 # number of iterations to run
     learning_rate : float = 0.0036
     warmup_iters : int = 0
     warmdown_iters : int = 1450 # number of iterations of linear warmup/warmdown for triangular or trapezoidal schedule
@@ -505,9 +505,32 @@ raw_model = model.module # always contains the "raw" unwrapped model
 ctx = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16)
 
 # init the optimizer(s)
-optimizer1 = torch.optim.AdamW(raw_model.lm_head.parameters(), lr=args.learning_rate, betas=(0.9, 0.95),
-                               weight_decay=args.weight_decay, fused=True)
-optimizer2 = Muon(raw_model.transformer.h.parameters(), lr=0.1*args.learning_rate, momentum=0.95)
+# optimizer1 = torch.optim.AdamW(raw_model.lm_head.parameters(), lr=args.learning_rate, betas=(0.9, 0.95),
+#                                weight_decay=args.weight_decay, fused=True)
+# optimizer2 = Muon(raw_model.transformer.h.parameters(), lr=0.1*args.learning_rate, momentum=0.95)
+# optimizers = [optimizer1, optimizer2]
+# collect transformer.h params into Muon-safe (2D) and the rest
+muon_params = []
+extra_adam_params = []
+
+for name, p in raw_model.transformer.h.named_parameters():
+    if p.ndim == 2:
+        muon_params.append(p)
+    else:
+        extra_adam_params.append(p)
+
+# AdamW: lm_head + any non-2D transformer params (e.g., conv weights, biases)
+optimizer1 = torch.optim.AdamW(
+    list(raw_model.lm_head.parameters()) + extra_adam_params,
+    lr=args.learning_rate,
+    betas=(0.9, 0.95),
+    weight_decay=args.weight_decay,
+    fused=True,
+)
+
+# Muon: only 2D parameters in the transformer blocks
+optimizer2 = Muon(muon_params, lr=0.1*args.learning_rate, momentum=0.95)
+
 optimizers = [optimizer1, optimizer2]
 # learning rate decay scheduler (linear warmup and warmdown)
 def get_lr(it):
@@ -543,6 +566,15 @@ if master_process:
         result = subprocess.run(['nvidia-smi'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         f.write(f'{result.stdout}\n')
         f.write('='*100 + '\n')
+
+        f.write("Experiment config:\n")
+        f.write(f"  use_mdha       = {args.use_mdha}\n")
+        f.write(f"  mdha_kernel_sz = {args.mdha_kernel_size}\n")
+        f.write(f"  use_gqa        = {args.use_gqa}\n")
+        f.write(f"  num_kv_groups  = {args.num_kv_groups}\n")
+        f.write(f"  num_gqa_layers = {args.num_gqa_layers}\n")
+        f.write('='*100 + '\n')
+
 
 training_time_ms = 0
 # start the clock
