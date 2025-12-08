@@ -26,6 +26,7 @@ import csv
 import subprocess
 import random
 import numpy as np
+import argparse
 
 torch.backends.cudnn.benchmark = True
 
@@ -72,8 +73,9 @@ hyp = {
     },
 }
 
-# Logging setup
-EXPERIMENT_NAME = 'baseline_tta2'
+#############################################
+#             Experiment Info              #
+#############################################
 
 LOG_CSV_PATH = os.path.join("cifar10", "logs", "part1_cifar10.csv")
 
@@ -88,9 +90,24 @@ GPU_COUNT = torch.cuda.device_count()
 
 RUNPOD_INSTANCE = os.environ.get('RUNPOD_INSTANCE_ID', 'unknown')
 
+
+#############################################
+#              Argument Parsing             #
+#############################################
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--experiment-name", type=str, default=None)
+    parser.add_argument("--tta-level", type=int, default=None)
+    parser.add_argument("--train-epochs", type=float, default=None)
+    parser.add_argument("--num-runs", type=int, default=25)
+    return parser.parse_args()
+
+
 #############################################
 #                DataLoader                 #
 #############################################
+
 
 CIFAR_MEAN = torch.tensor((0.4914, 0.4822, 0.4465))
 CIFAR_STD = torch.tensor((0.2470, 0.2435, 0.2616))
@@ -581,6 +598,21 @@ def main(run):
 
 
 if __name__ == "__main__":
+    args = parse_args()
+
+    # Override hyperparams from CLI if provided
+    global EXPERIMENT_NAME
+    if args.experiment_name is not None:
+        EXPERIMENT_NAME = args.experiment_name
+
+    if args.tta_level is not None:
+        hyp['net']['tta_level'] = args.tta_level
+
+    if args.train_epochs is not None:
+        hyp['opt']['train_epochs'] = args.train_epochs
+
+    num_runs = args.num_runs
+
     with open(sys.argv[0]) as f:
         code = f.read()
 
