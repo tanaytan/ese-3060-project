@@ -513,11 +513,6 @@ def main(run):
         model[0].bias.requires_grad = (
             epoch < hyp['opt']['whiten_bias_epochs'])
 
-        # Selectively unfreeze whitening layer weights
-        unfreeze_weight_epoch = hyp['opt']['whiten_weight_unfreeze_epoch']
-        if unfreeze_weight_epoch is not None and epoch >= unfreeze_weight_epoch:
-            model[0].weight.requires_grad = True
-
         ####################
         #     Training     #
         ####################
