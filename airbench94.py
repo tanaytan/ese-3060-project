@@ -22,6 +22,11 @@ import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as T
 
+import csv
+import subprocess
+import random
+import numpy as np
+
 torch.backends.cudnn.benchmark = True
 
 # We express the main training hyperparameters (batch size, learning rate, momentum, and weight decay)
@@ -66,6 +71,22 @@ hyp = {
         'tta_level': 2,
     },
 }
+
+# Logging setup
+EXPERIMENT_NAME = 'baseline_tta2'
+
+LOG_CSV_PATH = os.path.join("cifar10", "logs", "part1_cifar10.csv")
+
+try:
+    GIT_HASH = subprocess.check_output(
+        ['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
+except Exception:
+    GIT_HASH = 'unknown'
+
+GPU_NAME = torch.cuda.get_device_name(0)
+GPU_COUNT = torch.cuda.device_count()
+
+RUNPOD_INSTANCE = os.environ.get('RUNPOD_INSTANCE_ID', 'unknown')
 
 #############################################
 #                DataLoader                 #
@@ -336,6 +357,18 @@ def print_training_details(variables, is_final_entry):
         formatted.append(res.rjust(len(col)))
     print_columns(formatted, is_final_entry=is_final_entry)
 
+
+def append_experiment_row(row: dict):
+    os.makedirs(os.path.dirname(LOG_CSV_PATH), exist_ok=True)
+
+    file_exists = os.path.isfile(LOG_CSV_PATH)
+    with open(LOG_CSV_PATH, mode='a', newline='') as csvfile:
+        fieldnames = list(row.keys())
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
 ############################################
 #               Evaluation                 #
 ############################################
@@ -387,6 +420,11 @@ def evaluate(model, loader, tta_level=0):
 
 
 def main(run):
+    # run number == random seed
+    torch.manual_seed(run)
+    torch.cuda.manual_seed_all(run)
+    np.random.seed(run)
+    random.seed(run)
 
     batch_size = hyp['opt']['batch_size']
     epochs = hyp['opt']['train_epochs']
@@ -513,6 +551,31 @@ def main(run):
 
     epoch = 'eval'
     print_training_details(locals(), is_final_entry=True)
+
+    # Log to CSV
+    log_row = {
+        'experiment': EXPERIMENT_NAME,
+        'git_hash': GIT_HASH,
+        'seed': run,
+
+        'tta_level': hyp['net']['tta_level'],
+        'train_epochs': epochs,
+        'batch_size': batch_size,
+        'lr': hyp['opt']['lr'],
+        'momentum': momentum,
+        'weight_decay': hyp['opt']['weight_decay'],
+        'label_smoothing': hyp['opt']['label_smoothing'],
+        'whiten_bias_epochs': hyp['opt']['whiten_bias_epochs'],
+
+        'gpu_name': GPU_NAME,
+        'gpu_count': GPU_COUNT,
+        'instance': RUNPOD_INSTANCE,
+        'run': run,
+
+        'total_time_seconds': total_time_seconds,
+        'final_tta_acc': tta_val_acc,
+    }
+    append_experiment_row(log_row)
 
     return tta_val_acc
 
