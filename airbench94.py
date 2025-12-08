@@ -412,7 +412,7 @@ def infer(model, loader, tta_level=0):
         pad = 1
         padded_inputs = F.pad(inputs, (pad,)*4, 'reflect')
         inputs_translate_list = [
-            # padded_inputs[:, :, 0:32, 0:32],
+            padded_inputs[:, :, 0:32, 0:32],
             padded_inputs[:, :, 2:34, 2:34],
             # padded_inputs[:, :, 1:33, 1:33],
         ]
