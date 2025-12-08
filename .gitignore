@@ -1,0 +1,8 @@
+cifar10/cifar-10-batches-py/
+cifar10/*.tar.gz
+cifar10/*.pt
+logs/
+
+!cifar10/logs/
+!cifar10/logs/part1_cifar10.csv
+!cifar10/logs/part1.csv
