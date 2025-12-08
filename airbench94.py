@@ -594,7 +594,7 @@ def main(run):
     }
     append_experiment_row(log_row)
 
-    return tta_val_acc
+    return tta_val_acc, total_time_seconds
 
 
 if __name__ == "__main__":
@@ -618,8 +618,12 @@ if __name__ == "__main__":
 
     print_columns(logging_columns_list, is_head=True)
     # main('warmup')
-    accs = torch.tensor([main(run) for run in range(num_runs)])
+    results = [main(run) for run in range(num_runs)]
+    accs = torch.tensor([r[0] for r in results])
+    times = torch.tensor([r[1] for r in results])
     print('Mean: %.4f    Std: %.4f' % (accs.mean(), accs.std()))
+    print('Mean Time (s): %.4f    Std Time (s): %.4f' %
+          (times.mean().item(), times.std(unbiased=True).item()))
 
     log = {'code': code, 'accs': accs}
     log_dir = os.path.join('logs', str(uuid.uuid4()))
