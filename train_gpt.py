@@ -144,12 +144,11 @@ class CausalSelfAttention(nn.Module):
         self.head_dim = self.n_embd // self.n_head
         assert self.n_embd % self.n_head == 0
         
-        # --- flags from config ---
+        # flags from config
         self.use_mdha = getattr(config, "use_mdha", False)
         self.use_gqa  = getattr(config, "use_gqa", False)
         self.num_gqa_layers = getattr(config, "num_gqa_layers", 0)
 
-        # is this a GQA layer (top-K layers), or full MHA layer?
         self.is_gqa_layer = (
             self.use_gqa and
             self.num_gqa_layers > 0 and
@@ -176,7 +175,7 @@ class CausalSelfAttention(nn.Module):
 
         self.rotary = Rotary(self.head_dim)
 
-        # --- MDHA convs: depthwise-ish Conv1d along time ---
+        # MDHA convs: depthwise-ish Conv1d along time
         if self.use_mdha:
             ksize = getattr(config, "mdha_kernel_size", 3)
 
@@ -185,8 +184,8 @@ class CausalSelfAttention(nn.Module):
                 in_channels=self.n_head * self.head_dim,
                 out_channels=self.n_head * self.head_dim,
                 kernel_size=ksize,
-                groups=self.n_head,      # per-head conv
-                padding=ksize - 1,       # we'll crop to keep causality
+                groups=self.n_head,
+                padding=ksize - 1,
             )
 
             # For K/V: conv over [B, G*D, T], grouped by KV group
@@ -201,17 +200,17 @@ class CausalSelfAttention(nn.Module):
 
 
     def forward(self, x):
-        B, T, C = x.size()  # batch size, sequence length, embedding dim (n_embd)
+        B, T, C = x.size()
 
         # 1) Project Q/K/V with possibly different numbers of K/V groups
-        q = self.c_q(x).view(B, T, self.n_head, self.head_dim)               # [B, T, H, D]
-        k = self.c_k(x).view(B, T, self.num_kv_groups, self.head_dim)        # [B, T, G, D]
-        v = self.c_v(x).view(B, T, self.num_kv_groups, self.head_dim)        # [B, T, G, D]
+        q = self.c_q(x).view(B, T, self.n_head, self.head_dim)
+        k = self.c_k(x).view(B, T, self.num_kv_groups, self.head_dim)
+        v = self.c_v(x).view(B, T, self.num_kv_groups, self.head_dim)
 
         # 2) Optional MDHA (Conv1d along time) on Q/K/V
         if self.use_mdha:
             # Q: [B, T, H, D] -> [B, H*D, T] -> conv -> back
-            q_flat = q.reshape(B, T, self.n_head * self.head_dim).transpose(1, 2)  # [B, H*D, T]
+            q_flat = q.reshape(B, T, self.n_head * self.head_dim).transpose(1, 2)
             q_flat = self.q_conv(q_flat)[..., :T]  # crop to keep sequence length T
             q = q_flat.transpose(1, 2).reshape(B, T, self.n_head, self.head_dim)
 
@@ -227,7 +226,7 @@ class CausalSelfAttention(nn.Module):
         # 3) Rotary embeddings + QK norm (same as baseline, but K has G groups instead of H)
         cos, sin = self.rotary(q)
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
-        q, k = F.rms_norm(q, (q.size(-1),)), F.rms_norm(k, (k.size(-1),))  # QK norm suggested by @Grad62304977
+        q, k = F.rms_norm(q, (q.size(-1),)), F.rms_norm(k, (k.size(-1),))
 
         # 4) Prepare for scaled dot-product attention
         # q_attn: [B, H, T, D]
@@ -242,12 +241,12 @@ class CausalSelfAttention(nn.Module):
             group_size = self.n_head // self.num_kv_groups
             k_group = k.transpose(1, 2)  # [B, G, T, D]
             v_group = v.transpose(1, 2)  # [B, G, T, D]
-            k_attn = k_group.repeat_interleave(group_size, dim=1)  # [B, H, T, D]
-            v_attn = v_group.repeat_interleave(group_size, dim=1)  # [B, H, T, D]
+            k_attn = k_group.repeat_interleave(group_size, dim=1)
+            v_attn = v_group.repeat_interleave(group_size, dim=1)
         else:
             # baseline: num_kv_groups == n_head
-            k_attn = k.transpose(1, 2)  # [B, H, T, D]
-            v_attn = v.transpose(1, 2)  # [B, H, T, D]
+            k_attn = k.transpose(1, 2)
+            v_attn = v.transpose(1, 2)
 
         # 5) Scaled dot-product attention (unchanged interface)
         y = F.scaled_dot_product_attention(
@@ -255,7 +254,7 @@ class CausalSelfAttention(nn.Module):
             is_causal=True,
         )
         # 6) Re-assemble heads and project out
-        y = y.transpose(1, 2).contiguous().view_as(x)  # [B, T, C]
+        y = y.transpose(1, 2).contiguous().view_as(x)
         y = self.c_proj(y)
         return y
 
@@ -296,7 +295,7 @@ class GPTConfig:
     n_head : int = 6 # head dim 128 suggested by @Grad62304977
     n_embd : int = 768
     
-    # --- NEW: attention experiment flags ---
+    # attention experiment flags
     use_mdha : bool = False
     use_gqa : bool = False
     mdha_kernel_size : int = 3
@@ -328,12 +327,12 @@ class GPT(nn.Module):
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
-            logits = logits.float() # use tf32/fp32 for logits
+            logits = logits.float()
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
-            logits = logits.float() # use tf32/fp32 for logits
+            logits = self.lm_head(x[:, [-1], :])
+            logits = logits.float()
             loss = None
 
         # there are performance reasons why not returning logits is prudent, if not needed
@@ -429,7 +428,7 @@ class Hyperparameters:
     batch_size : int = 8*64 # batch size, in sequences, across all devices
     device_batch_size : int = 64 # batch size, in sequences, per device
     sequence_length : int = 1024 # sequence length, in tokens
-    num_iterations : int = 100 # number of iterations to run
+    num_iterations : int = 250 # number of iterations to run
     learning_rate : float = 0.0036
     warmup_iters : int = 0
     warmdown_iters : int = 1450 # number of iterations of linear warmup/warmdown for triangular or trapezoidal schedule
@@ -439,8 +438,7 @@ class Hyperparameters:
     val_tokens : int = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     save_every : int = 0 # every how many steps to save the checkpoint? 0 for only at the end
 
-    # --- NEW: attention experiment flags (wired to env vars for CLI control) ---
-    # NOTE: os is already imported at the top of the file.
+    # attention experiment flags (wired to env vars for CLI control)
     use_mdha : bool = bool(int(os.getenv("USE_MDHA", "0")))
     use_gqa : bool = bool(int(os.getenv("USE_GQA", "0")))
     mdha_kernel_size : int = int(os.getenv("MDHA_KERNEL_SIZE", "3"))
@@ -566,6 +564,8 @@ if master_process:
         result = subprocess.run(['nvidia-smi'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         f.write(f'{result.stdout}\n')
         f.write('='*100 + '\n')
+
+        
 
         f.write("Experiment config:\n")
         f.write(f"  use_mdha       = {args.use_mdha}\n")
