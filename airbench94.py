@@ -55,7 +55,6 @@ hyp = {
         'label_smoothing': 0.2,
         # how many epochs to train the whitening layer bias before freezing
         'whiten_bias_epochs': 3,
-        'whiten_weight_unfreeze_epoch': 3,  # Weight unfreezing
     },
     'aug': {
         'flip': True,
@@ -71,7 +70,6 @@ hyp = {
         'scaling_factor': 1/9,
         # the level of test-time augmentation: 0=none, 1=mirror, 2=mirror+translate
         'tta_level': 2,
-        'use_whiten_residual': False,  # Whitening residual connection
     },
 }
 
@@ -475,16 +473,7 @@ def main(run):
 
     norm_biases = [p for k, p in model.named_parameters()
                    if 'norm' in k and p.requires_grad]
-
-    whiten_weight = model[0].weight
-    other_params = []
-    for k, p in model.named_parameters():
-        if 'norm' in k:
-            continue
-        if p is whiten_weight:
-            other_params.append(p)
-        elif p.requires_grad:
-            other_params.append(p)
+    other_params = [p for k, p in model.named_parameters() if 'norm' not in k and p.requires_grad]
 
     param_configs = [dict(params=norm_biases, lr=lr_biases, weight_decay=wd/lr_biases),
                      dict(params=other_params, lr=lr, weight_decay=wd/lr)]

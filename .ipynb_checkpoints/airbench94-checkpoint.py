@@ -412,7 +412,7 @@ def infer(model, loader, tta_level=0):
         pad = 1
         padded_inputs = F.pad(inputs, (pad,)*4, 'reflect')
         inputs_translate_list = [
-            # padded_inputs[:, :, 0:32, 0:32],
+            padded_inputs[:, :, 0:32, 0:32],
             padded_inputs[:, :, 2:34, 2:34],
             # padded_inputs[:, :, 1:33, 1:33],
         ]
@@ -473,8 +473,8 @@ def main(run):
 
     norm_biases = [p for k, p in model.named_parameters()
                    if 'norm' in k and p.requires_grad]
-    other_params = [p for k, p in model.named_parameters(
-    ) if 'norm' not in k and p.requires_grad]
+    other_params = [p for k, p in model.named_parameters() if 'norm' not in k and p.requires_grad]
+
     param_configs = [dict(params=norm_biases, lr=lr_biases, weight_decay=wd/lr_biases),
                      dict(params=other_params, lr=lr, weight_decay=wd/lr)]
     optimizer = torch.optim.SGD(
@@ -512,6 +512,11 @@ def main(run):
 
         model[0].bias.requires_grad = (
             epoch < hyp['opt']['whiten_bias_epochs'])
+
+        # Selectively unfreeze whitening layer weights
+        unfreeze_weight_epoch = hyp['opt']['whiten_weight_unfreeze_epoch']
+        if unfreeze_weight_epoch is not None and epoch >= unfreeze_weight_epoch:
+            model[0].weight.requires_grad = True
 
         ####################
         #     Training     #
