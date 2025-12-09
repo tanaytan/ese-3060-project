@@ -502,12 +502,6 @@ model = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module # always contains the "raw" unwrapped model
 ctx = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16)
 
-# init the optimizer(s)
-# optimizer1 = torch.optim.AdamW(raw_model.lm_head.parameters(), lr=args.learning_rate, betas=(0.9, 0.95),
-#                                weight_decay=args.weight_decay, fused=True)
-# optimizer2 = Muon(raw_model.transformer.h.parameters(), lr=0.1*args.learning_rate, momentum=0.95)
-# optimizers = [optimizer1, optimizer2]
-# collect transformer.h params into Muon-safe (2D) and the rest
 muon_params = []
 extra_adam_params = []
 
