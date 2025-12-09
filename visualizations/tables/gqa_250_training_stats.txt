@@ -1,0 +1,12 @@
+GQA Experiments Table over 250 epochs on 2 A100 SXMs
+============================================================
++-------------------------------------------------+--------------------+-----------+----------------+
+| Log File                                        | Overall Train Time | Step Avg  | Final Val Loss |
++-------------------------------------------------+--------------------+-----------+----------------+
+| gqa_plain_250_iterations                        | 5m 16.75s          | 1319.81ms | 5.3181         |
+| gqa_most_sharing_moderate_layers_250_iterations | 5m 3.48s           | 1264.52ms | 5.3126         |
+| gqa_most_sharing_250_iterations                 | 5m 11.76s          | 1299.01ms | 5.3119         |
+| gqa_most_layers_250_iterations                  | 5m 5.50s           | 1272.91ms | 5.3259         |
+| gqa_moderate_sharing_250_iterations             | 5m 13.72s          | 1307.19ms | 5.3311         |
+| gqa_moderate_layers_250_iterations              | 5m 13.42s          | 1305.92ms | 5.3112         |
++-------------------------------------------------+--------------------+-----------+----------------+
