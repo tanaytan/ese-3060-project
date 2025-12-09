@@ -1,4 +1,4 @@
-Training Statistics Table
+GQA Experiments Table
 ============================================================
 +-------------------------------------------------+--------------------+-----------+----------------+
 | Log File                                        | Overall Train Time | Step Avg  | Final Val Loss |
