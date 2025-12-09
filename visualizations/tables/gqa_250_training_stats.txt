@@ -1,4 +1,4 @@
-GQA Experiments Table
+GQA Experiments Table over 250 epochs on 2 A100 SXMs
 ============================================================
 +-------------------------------------------------+--------------------+-----------+----------------+
 | Log File                                        | Overall Train Time | Step Avg  | Final Val Loss |
