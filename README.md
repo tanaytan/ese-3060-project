@@ -23,20 +23,17 @@ Install all required packages:
 pip install -r requirements.txt
 ```
 
-## Running airbench94.py
+## Part 1
 
 ### Overview
 
-CIFAR-10 training benchmark achieving 94.01% average accuracy in 3.83 seconds on an NVIDIA A100-SXM. You will want to use a single node of an a100. NOTE: We used an NVIDIA A100-PCIe for our experiments.
-
-- CIFAR-10 dataset automatically downloaded on first run
-- Cached to `cifar10/` directory as `.pt` files for faster subsequent runs
+CIFAR-10 training benchmark achieving 94.01% average accuracy in 3.83 seconds on an NVIDIA A100-SXM. NOTE: We used an NVIDIA A100-PCIe for our experiments.
 
 The main file is:
 
 - airbench94.py — CIFAR-10 training benchmark used to reproduce and modify the “airbench94” baseline described in the project handout.
 
-My experiments (baseline and modifications) are logged in cifar10/logs/ and summarized in master_summary.csv.
+My experiments (baseline and modifications) are logged in **cifar10/logs/** and summarized in **master_summary.csv**.
 
 ### Execution
 
@@ -66,7 +63,7 @@ python airbench94.py --train-epochs 9.9
 ```
 
 Change TTA level
-(TTA 0 = no test-time augmentation, TTA 1 = flip only, TTA 2 = flip + 1 translation)
+(TTA 0 = no test-time augmentation, TTA 1 = flip only, TTA 2 = flip + 1 translation i.e. TTA 1.5)
 
 ```bash
 python airbench94.py --tta-level 2
@@ -98,7 +95,7 @@ python airbench94.py \
 
 ### Hardware Requirements
 
-- NVIDIA A100 GPU recommended
+- NVIDIA A100-PCIe GPU to reproduce
 - CUDA 11.7+
 - NVIDIA Driver 515.105.01 or compatible
 
